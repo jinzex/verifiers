@@ -64,23 +64,57 @@ async def test_materialize_image_reuses_cached_sif(tmp_path: Path) -> None:
 
 @pytest.mark.integration
 @pytest.mark.skipif(shutil.which("apptainer") is None, reason="apptainer is not installed")
-async def test_pull_sif_and_run_lifecycle() -> None:
+@pytest.mark.parametrize(
+    ("image", "ignore_fakeroot_command"),
+    [
+        # Debian/glibc exercises standard fakeroot across repeated named-instance execs,
+        # including chown; Alpine/musl exercises the compatibility fallback.
+        pytest.param("debian:12-slim", False, id="standard-fakeroot"),
+        pytest.param("alpine:3.20", True, id="fallback-ignore-fakeroot-command"),
+    ],
+)
+async def test_pull_sif_and_run_lifecycle(image: str, ignore_fakeroot_command: bool) -> None:
     with tempfile.TemporaryDirectory(prefix="vf-apptainer-test-") as temporary:
         runtime = ApptainerRuntime(
             ApptainerConfig(
-                image="alpine:3.20",
+                image=image,
                 sif_dir=temporary,
                 workdir="/workspace",
+                ignore_fakeroot_command=ignore_fakeroot_command,
             ),
             name=f"vf-test-{uuid.uuid4().hex[:12]}",
         )
         try:
             await runtime.start()
-            assert _sif_path(temporary, "docker://alpine:3.20").is_file()
+            assert _sif_path(temporary, f"docker://{image}").is_file()
+            identity = await runtime.run(["id", "-u"], {})
+            assert identity.exit_code == 0
+            assert identity.stdout.strip() == "0"
             await runtime.write("runtime-test.txt", b"ready")
             assert await runtime.read("runtime-test.txt") == b"ready"
             result = await runtime.run(["pwd"], {})
             assert result.exit_code == 0
             assert result.stdout.strip() == "/workspace"
+            if not ignore_fakeroot_command:
+                result = await runtime.run(
+                    ["sh", "-lc", 'chown 42:43 runtime-test.txt && stat -c "%u:%g" runtime-test.txt'],
+                    {},
+                )
+                assert result.exit_code == 0
+                assert result.stdout.strip() == "42:43"
+                await runtime.run_background(
+                    ["sh", "-c", 'sleep 1; stat -c "%u:%g" /tmp > background-owner.txt'],
+                    {},
+                    "background.log",
+                )
+                for _ in range(30):
+                    result = await runtime.run(
+                        ["sh", "-c", "test -s background-owner.txt && cat background-owner.txt"],
+                        {},
+                    )
+                    if result.exit_code == 0:
+                        break
+                    await asyncio.sleep(0.1)
+                assert result.stdout.strip() == "0:0"
         finally:
             await runtime.stop()

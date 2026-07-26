@@ -65,4 +65,4 @@ jobs:
 
       - name: Run v1 tests
         run: |
-          uv run pytest tests/v1 -vv -n auto -m "not prime and not modal" --cov=verifiers --cov-append --cov-report=xml --cov-report=term
+          uv run pytest tests/v1 -vv -n auto -m "not prime and not modal and not apptainer" --cov=verifiers --cov-append --cov-report=xml --cov-report=term

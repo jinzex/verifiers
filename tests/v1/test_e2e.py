@@ -2,8 +2,8 @@
 
 Placement coverage is pairwise (see tests/v1/conftest.py): each list below names the
 combinations a test runs — every axis value at least once plus the cross-boundary pairs
-with distinct networking — instead of fanning the full cross product. prime/modal rows
-are local-only (their marks are excluded in CI)."""
+with distinct networking — instead of fanning the full cross product. prime/modal/apptainer
+rows require local setup and are excluded in CI."""
 
 import pytest
 
@@ -15,7 +15,7 @@ def _pair(a: str, b: str, id: str, *extra_marks):
     return pytest.param(a, b, marks=[*marks, *extra_marks], id=id)
 
 
-# harness x harness runtime: every harness once, both local runtimes hit, one remote row
+# harness x harness runtime: every harness once, subprocess/docker hit, one remote row
 # per provider. codex/claude-code are excluded here (unreliable on a no-op echo chat
 # task) — test_agentic covers them.
 CHAT_PLACEMENTS = [
@@ -28,10 +28,11 @@ CHAT_PLACEMENTS = [
 ]
 
 # harness x harness runtime for the shell task: every coding agent once (null is a chat
-# loop with no shell), both local runtimes hit, one remote row per provider.
+# loop with no shell), all local runtimes hit, one remote row per provider.
 AGENTIC_PLACEMENTS = [
     _pair("bash", "subprocess", "bash-harness-in-subprocess"),
     _pair("rlm", "docker", "rlm-harness-in-docker"),
+    _pair("rlm", "apptainer", "rlm-harness-in-apptainer"),
     _pair("kimi-code", "subprocess", "kimi-code-harness-in-subprocess"),
     _pair("codex", "docker", "codex-harness-in-docker"),
     _pair("claude-code", "subprocess", "claude-code-harness-in-subprocess"),
@@ -39,12 +40,13 @@ AGENTIC_PLACEMENTS = [
     _pair("bash", "modal", "bash-harness-in-modal"),
 ]
 
-# harness runtime x user placement: colocated in both local runtimes, each own-runtime
+# harness runtime x user placement: colocated in all local runtimes, each own-runtime
 # across the opposite boundary, modal rows local-only. No prime rows: a user sim in a
 # prime sandbox needs prime port exposure (unreachable from the host here).
 USER_PLACEMENTS = [
     _pair("subprocess", "colocated", "harness-in-subprocess-with-user-colocated"),
     _pair("docker", "colocated", "harness-in-docker-with-user-colocated"),
+    _pair("apptainer", "colocated", "harness-in-apptainer-with-user-colocated"),
     _pair("subprocess", "docker", "harness-in-subprocess-with-user-in-docker"),
     _pair("docker", "subprocess", "harness-in-docker-with-user-in-subprocess"),
     _pair("modal", "colocated", "harness-in-modal-with-user-colocated"),
@@ -57,6 +59,7 @@ USER_PLACEMENTS = [
 TOOL_PLACEMENTS = [
     _pair("subprocess", "colocated", "harness-in-subprocess-with-tool-colocated"),
     _pair("docker", "colocated", "harness-in-docker-with-tool-colocated"),
+    _pair("apptainer", "colocated", "harness-in-apptainer-with-tool-colocated"),
     _pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
     _pair("docker", "subprocess", "harness-in-docker-with-tool-in-subprocess"),
     _pair("docker", "docker", "harness-in-docker-with-tool-in-docker"),

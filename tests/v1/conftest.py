@@ -16,19 +16,20 @@ one without `indirect=True` fails loudly.
 
 Every combination carries its axes' pytest marks, so subsets select with `-m`:
 
-    uv run pytest tests/v1 -n auto                                # everything (needs modal setup)
-    uv run pytest tests/v1 -n auto -m "not prime and not modal"  # the CI set (host + docker only)
+    uv run pytest tests/v1 -n auto                                # everything (needs local provider setup)
+    uv run pytest tests/v1 -n auto -m "not prime and not modal and not apptainer"  # the CI set (host + docker only)
     uv run pytest tests/v1 -n auto -m docker                      # any case touching the docker runtime
+    uv run pytest tests/v1 -n auto -m apptainer                   # only Apptainer (needs local setup)
     uv run pytest tests/v1 -n auto -m bash                        # only the bash harness
     uv run pytest tests/v1 -n auto -m prime                       # only prime (real sandboxes; local)
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
 
-Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placement `colocated`,
+Marks: runtimes `subprocess` / `docker` / `apptainer` / `prime` / `modal`, placement `colocated`,
 harnesses `null` / `bash` / `rlm` / `kimi_code` / `codex` / `claude_code`. A mark is applied per
 axis, so it selects every case touching that value on ANY axis; for one exact combination use `-k`
 on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`). prime/modal provision real
-remote sandboxes (slow, infra-flaky, need setup), so they're local-only — CI runs
-`-m "not prime and not modal"`.
+remote sandboxes (slow, infra-flaky, need setup); Apptainer needs a local CLI and user namespaces,
+so all three are local-only — CI runs `-m "not prime and not modal and not apptainer"`.
 """
 
 import os

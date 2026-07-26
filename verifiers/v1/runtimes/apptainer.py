@@ -22,6 +22,7 @@ from verifiers.v1.runtimes.base import BaseRuntimeInfo, ProgramResult, Runtime
 logger = logging.getLogger(__name__)
 
 _START_TIMEOUT = 300
+_PULL_TIMEOUT = 30 * 60
 
 
 class ApptainerExecConfig(BaseConfig):
@@ -59,7 +60,9 @@ class ApptainerConfig(BaseConfig):
     writable_tmpfs: bool = True
     """Add a writable in-memory overlay to the read-only SIF."""
     fakeroot: bool = True
-    """Run in a root-mapped user namespace so image-owned workdirs are writable."""
+    """Run the instance with Apptainer fakeroot."""
+    ignore_fakeroot_command: bool = False
+    """Use only root UID mapping when the host fakeroot command is incompatible with the image."""
     exec: ApptainerExecConfig = Field(default_factory=ApptainerExecConfig)
 
 
@@ -167,13 +170,19 @@ def _pull_sif(binary: str, image: str, sif: Path) -> str:
 
         temporary = sif.with_name(f".{sif.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp.sif")
         try:
-            result = subprocess.run(
-                [binary, "pull", "--force", str(temporary), image],
-                env=_host_env(),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            try:
+                result = subprocess.run(
+                    [binary, "pull", "--force", str(temporary), image],
+                    env=_host_env(),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=_PULL_TIMEOUT,
+                )
+            except subprocess.TimeoutExpired as e:
+                raise SandboxError(
+                    f"apptainer pull timed out after {_PULL_TIMEOUT} seconds for {image!r}"
+                ) from e
             if result.returncode != 0:
                 raise SandboxError(f"apptainer pull failed for {image!r}: {(result.stderr or result.stdout).strip()}")
             os.replace(temporary, sif)
@@ -208,6 +217,7 @@ class ApptainerRuntime(Runtime):
         self._exec_semaphore = _EXEC_LIMITER.get(config.exec.concurrency)
         self._running = False
         self._start_attempted = False
+        self._background: set[asyncio.Task[int]] = set()
 
     async def start(self) -> None:
         try:
@@ -228,7 +238,9 @@ class ApptainerRuntime(Runtime):
         if self.config.writable_tmpfs:
             args.append("--writable-tmpfs")
         if self.config.fakeroot:
-            args += ["--fakeroot", "--ignore-fakeroot-command"]
+            args.append("--fakeroot")
+            if self.config.ignore_fakeroot_command:
+                args.append("--ignore-fakeroot-command")
         image = await _materialize_image(
             self._binary,
             self.config.image,
@@ -292,11 +304,19 @@ class ApptainerRuntime(Runtime):
         )
 
     async def run_background(self, argv: list[str], env: dict[str, str], log: str) -> None:
-        command = " ".join(shlex.quote(arg) for arg in argv)
-        inner = f"nohup {command} > {shlex.quote(log)} 2>&1 </dev/null &"
-        result = await self.run(["sh", "-c", inner], env)
-        if result.exit_code != 0:
-            raise SandboxError(f"apptainer background command failed: {result.stderr.strip()}")
+        # Keep the host-side exec alive: standard fakeroot's faked daemon is scoped
+        # to it, so `nohup ... &` would leave the server with stale fakeroot state.
+        inner = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
+        async with self._exec_semaphore:
+            proc = await asyncio.create_subprocess_exec(
+                self._binary,
+                *self._exec_args(["sh", "-c", inner], env),
+                env=_host_env(),
+                stdin=asyncio.subprocess.DEVNULL,
+            )
+        waiter = asyncio.create_task(proc.wait())
+        self._background.add(waiter)
+        waiter.add_done_callback(self._background.discard)
 
     async def read(self, path: str) -> bytes:
         code, stdout, stderr = await self._exec(["cat", path], {})
