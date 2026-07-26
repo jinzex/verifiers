@@ -2,6 +2,11 @@ from typing import Annotated
 
 from pydantic import Field
 
+from verifiers.v1.runtimes.apptainer import (
+    ApptainerConfig,
+    ApptainerRuntime,
+    ApptainerRuntimeInfo,
+)
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
@@ -18,17 +23,19 @@ from verifiers.v1.runtimes.subprocess import (
 )
 
 RuntimeConfig = Annotated[
-    SubprocessConfig | DockerConfig | PrimeConfig | ModalConfig,
+    SubprocessConfig | ApptainerConfig | DockerConfig | PrimeConfig | ModalConfig,
     Field(discriminator="type"),
 ]
 
 RuntimeInfo = Annotated[
-    SubprocessRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | ModalRuntimeInfo,
+    SubprocessRuntimeInfo | ApptainerRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | ModalRuntimeInfo,
     Field(discriminator="type"),
 ]
 
 
 def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:
+    if isinstance(config, ApptainerConfig):
+        return ApptainerRuntime
     if isinstance(config, PrimeConfig):
         return PrimeRuntime
     if isinstance(config, ModalConfig):
@@ -61,6 +68,9 @@ __all__ = [
     "SubprocessConfig",
     "SubprocessRuntime",
     "SubprocessRuntimeInfo",
+    "ApptainerConfig",
+    "ApptainerRuntime",
+    "ApptainerRuntimeInfo",
     "DockerConfig",
     "DockerRuntime",
     "DockerRuntimeInfo",

@@ -31,7 +31,7 @@ def resolve_runtime_config(
         if isinstance(config, SubprocessConfig):
             raise ValueError(
                 f"task {task.data.idx!r} requires image {task.data.image!r}, but the subprocess "
-                "runtime has no container; use the docker or prime runtime"
+                "runtime has no container; use the apptainer, docker, or prime runtime"
             )
         updates["image"] = task.data.image
     workdir_spec = type(config).model_fields.get("workdir")
@@ -106,7 +106,7 @@ def validate_pairing(
         raise ValueError(
             f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but "
             "this run resolves to the subprocess runtime; use "
-            "--env.<agent>.harness.runtime.type docker or prime."
+            "--env.<agent>.harness.runtime.type apptainer, docker, or prime."
         )
 
 

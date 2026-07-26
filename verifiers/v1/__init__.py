@@ -86,6 +86,7 @@ from verifiers.v1.utils.git import (
     resolve_head as resolve_head,
 )
 from verifiers.v1.runtimes import (
+    ApptainerConfig,
     DockerConfig,
     PrimeConfig,
     ProgramResult,
@@ -241,6 +242,7 @@ __all__ = [
     "RuntimeInfo",
     "ProgramResult",
     "SubprocessConfig",
+    "ApptainerConfig",
     "DockerConfig",
     "PrimeConfig",
     "Env",
