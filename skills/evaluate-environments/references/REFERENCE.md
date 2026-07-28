@@ -21,7 +21,7 @@ EvalConfig                          (the run)
 │  ├─ timeout: EnvTimeoutConfig     (episode / finalize — the env's own hooks)
 │  ├─ retries: RolloutRetryConfig   (whole-episode fallback for faults no agent owns)
 │  └─ interception
-└─ pool: PoolConfig                 (static | elastic) — env-server only
+└─ pool: PoolConfig                 (static | elastic | remote) — env-server only
 ```
 
 There is no run-level harness: each agent pins its own (`--env.agent.harness.*` on the single-agent env), an unpinned agent runs the taskset's default harness (its bundled one, else `bash`), and a declared pin is the env author's default. The retired flat axes error with a pointer: `--taskset.*` → `--env.taskset.*`, `--harness.*` → `--env.<agent>.harness.*`.
@@ -149,7 +149,7 @@ On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a clas
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `env` | `EnvConfig` | `SingleAgentEnvConfig()` | The environment (above). `SerializeAsAny`, so the resolved subclass's agents and knobs survive `model_dump` onto the wire. |
-| `pool` | `PoolConfig` | `ElasticPoolConfig()` | See [Pool config](#pool-config). |
+| `pool` | `PoolConfig` | `ElasticPoolConfig()` | Local static/elastic workers or fixed remote backends; see [Pool config](#pool-config). |
 
 ---
 
@@ -188,7 +188,7 @@ Rerun when the run ends with a captured error. Matching is by the error's **exce
 
 ## Pool config
 
-`verifiers/v1/env.py`. Discriminated on `type`; selected with `--pool.type static|elastic`. Drives the env-server worker pool (the `--server` path).
+`verifiers/v1/configs/env.py`. Discriminated on `type`; selected with `--pool.type static|elastic|remote`. Drives the env-server worker pool (the `--server` path).
 
 ### `StaticPoolConfig` — `type: "static"`
 
@@ -206,6 +206,14 @@ Elastic pool: start at one worker and scale up on demand.
 | --- | --- | --- | --- |
 | `max_workers` | `int \| None` | `None` | Upper bound on workers (None = unbounded). |
 | `multiplex` | `int` | `128` (≥1) | Rollouts per worker for the scale-up trigger: add a worker once in-flight rollouts reach 90% of `workers * multiplex`. |
+
+### `RemotePoolConfig` — `type: "remote"`
+
+Connect a router to independently managed EnvServers without owning their lifecycle.
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `backend_addresses` | `list[str]` | required | Fixed EnvServer addresses; use `tcp://host:port` across nodes. The router becomes ready after every backend is healthy. |
 
 ---
 
@@ -588,7 +596,7 @@ Use `only_gold` or `only_setup` to select one mode; setting both is rejected. Th
   `TaskData`; otherwise a non-`None` row value fills it, and otherwise the runtime/provider default remains. `TaskData.image` is the required image for that row and replaces the runtime's base image. Unsupported resource fields are ignored; evaluation warns once per runtime/field.
 - **Timeout precedence.** For eval stages, a non-`None` agent-level `TimeoutConfig` value
   (`--env.<agent>.timeout.*`) wins over the corresponding `TaskData.timeout` value; if both are `None`, there is no framework timeout. The setup value is one deadline shared by task setup and harness provisioning. Validate uses `CheckTimeoutConfig.setup`, then falls back to `TaskData.timeout.setup`, while `CheckTimeoutConfig.total` independently bounds `Task.validate`.
-- **Discriminated unions** are selected by their `type` field: `client.type` (eval|train), `pool.type` (static|elastic), `env.<agent>.harness.runtime.type` / `runtime.type` (subprocess|docker|prime|modal).
+- **Discriminated unions** are selected by their `type` field: `client.type` (eval|train), `pool.type` (static|elastic|remote), `env.<agent>.harness.runtime.type` / `runtime.type` (subprocess|docker|prime|modal).
 - **Frozen models.** `TaskData`, `TaskResources`, and `TaskTimeout` are immutable wire input, not
   mutable runtime state. Put per-rollout coordination on typed `trace.state`. `RolloutLimits` is an immutable framework limit derived from the env's `max_*` fields.
 - **Legacy v0.** Set the run-level `id` (leave `env.taskset` unset) to run a classic `load_environment` env through the bridge. `--resume` is not supported for legacy evals.

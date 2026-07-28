@@ -84,14 +84,31 @@ class ElasticPoolConfig(BaseConfig):
     reach 90% of `workers * multiplex`."""
 
 
-# Discriminated on `type` so the CLI selects with `--pool.type static|elastic`.
+class RemotePoolConfig(BaseConfig):
+    """Fixed env-server pool backed by independently managed remote servers."""
+
+    type: Literal["remote"] = "remote"
+    backend_addresses: list[str] = Field(min_length=1)
+    """EnvServer addresses connected by the router."""
+
+
+# Discriminated on `type` so the CLI selects with `--pool.type static|elastic|remote`.
 PoolConfig = Annotated[
-    StaticPoolConfig | ElasticPoolConfig, Field(discriminator="type")
+    StaticPoolConfig | ElasticPoolConfig | RemotePoolConfig,
+    Field(discriminator="type"),
 ]
 
 
-def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
-    """Unpack a pool config into `serve_env` kwargs (`max_workers` / `multiplex` / `elastic`)."""
+def pool_serve_kwargs(
+    pool: StaticPoolConfig | ElasticPoolConfig | RemotePoolConfig,
+) -> dict:
+    """Unpack a pool config into `serve_env` kwargs."""
+    if isinstance(pool, RemotePoolConfig):
+        return {
+            "max_workers": len(pool.backend_addresses),
+            "backend_addresses": pool.backend_addresses,
+            "elastic": False,
+        }
     if isinstance(pool, ElasticPoolConfig):
         return {
             "max_workers": pool.max_workers,
@@ -112,7 +129,7 @@ def _single_agent_env_config() -> EnvConfig:
 class EnvServerConfig(BaseConfig):
     """A run's environment plus how it's *served*: the `env` block and the worker-pool
     sizing. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrator, so
-    they all configure the pool the same way (`--pool.type elastic|static`)."""
+    they all configure the pool the same way (`--pool.type elastic|static|remote`)."""
 
     # SerializeAsAny: see EnvConfig.taskset — model_dump() must keep the subclass's
     # agent fields and knobs.
@@ -122,7 +139,7 @@ class EnvServerConfig(BaseConfig):
     class by the env id, else the taskset id."""
     pool: PoolConfig = ElasticPoolConfig()
     """Worker-pool sizing for the env server. `elastic` (default) starts at one worker and
-    scales up on demand; `static` pre-spawns a fixed `num_workers`."""
+    scales up on demand; `static` pre-spawns local workers; `remote` connects fixed servers."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     id: ID | None = None
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the

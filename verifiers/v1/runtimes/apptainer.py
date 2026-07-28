@@ -9,9 +9,11 @@ import re
 import shlex
 import subprocess
 import tempfile
+import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import AsyncIterator, Literal
 
 from pydantic import Field, PositiveInt
 from pydantic_config import BaseConfig
@@ -46,6 +48,41 @@ class _ExecLimiter:
 
 
 _EXEC_LIMITER = _ExecLimiter()
+
+
+@asynccontextmanager
+async def _timed_command(
+    semaphore: asyncio.Semaphore,
+    trace_id: str,
+    args: list[str],
+    operation: str | None = None,
+) -> AsyncIterator[None]:
+    if operation is None:
+        if args == ["--version"]:
+            operation = "version"
+        elif args[:2] == ["instance", "start"]:
+            operation = "instance_start"
+        else:
+            operation = args[0]
+    instance = next((i for i, arg in enumerate(args) if arg.startswith("instance://")), -1)
+    program = PurePosixPath(args[instance + 1]).name if 0 <= instance < len(args) - 1 else "-"
+    queued_at, queued_clock = time.time(), time.perf_counter()
+    async with semaphore:
+        acquired_clock = time.perf_counter()
+        try:
+            yield
+        finally:
+            completed_clock = time.perf_counter()
+            logger.info(
+                "apptainer_timing trace_id=%s op=%s program=%s queued_at=%.6f "
+                "queue_s=%.6f command_s=%.6f",
+                trace_id,
+                operation,
+                program,
+                queued_at,
+                acquired_clock - queued_clock,
+                completed_clock - acquired_clock,
+            )
 
 
 class ApptainerConfig(BaseConfig):
@@ -88,9 +125,11 @@ async def _command(
     binary: str,
     args: list[str],
     semaphore: asyncio.Semaphore,
+    trace_id: str,
     stdin: bytes | None = None,
+    operation: str | None = None,
 ) -> tuple[int, bytes, bytes]:
-    async with semaphore:
+    async with _timed_command(semaphore, trace_id, args, operation):
         proc = await asyncio.create_subprocess_exec(
             binary,
             *args,
@@ -108,9 +147,9 @@ async def _command(
         return proc.returncode or 0, stdout, stderr
 
 
-async def _start_instance(binary: str, args: list[str], semaphore: asyncio.Semaphore) -> ProgramResult:
+async def _start_instance(binary: str, args: list[str], semaphore: asyncio.Semaphore, trace_id: str) -> ProgramResult:
     """Start an instance without waiting on pipes inherited by its daemon."""
-    async with semaphore:
+    async with _timed_command(semaphore, trace_id, args):
         with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
             proc = await asyncio.create_subprocess_exec(
                 binary,
@@ -196,6 +235,7 @@ async def _materialize_image(
     image: str,
     sif_dir: str | None,
     semaphore: asyncio.Semaphore,
+    trace_id: str,
 ) -> str:
     resolved = _resolve_image(image)
     if sif_dir is None or Path(resolved).is_file():
@@ -203,7 +243,8 @@ async def _materialize_image(
     sif = _sif_path(sif_dir, resolved)
     if sif.is_file():
         return str(sif)
-    async with semaphore:
+    args = ["pull", "--force", str(sif), resolved]
+    async with _timed_command(semaphore, trace_id, args):
         return await asyncio.to_thread(_pull_sif, binary, resolved, sif)
 
 
@@ -221,7 +262,7 @@ class ApptainerRuntime(Runtime):
 
     async def start(self) -> None:
         try:
-            code, stdout, stderr = await _command(self._binary, ["--version"], self._exec_semaphore)
+            code, stdout, stderr = await _command(self._binary, ["--version"], self._exec_semaphore, self._instance)
         except FileNotFoundError as e:
             raise RuntimeError("apptainer runtime selected but the `apptainer` CLI is not installed") from e
         if code != 0:
@@ -246,10 +287,11 @@ class ApptainerRuntime(Runtime):
             self.config.image,
             self.config.sif_dir,
             self._exec_semaphore,
+            self._instance,
         )
         args += [image, self._instance]
         self._start_attempted = True
-        result = await _start_instance(self._binary, args, self._exec_semaphore)
+        result = await _start_instance(self._binary, args, self._exec_semaphore, self._instance)
         if result.exit_code != 0:
             raise SandboxError(f"apptainer instance start failed: {(result.stderr or result.stdout).strip()}")
         self._running = True
@@ -257,6 +299,7 @@ class ApptainerRuntime(Runtime):
         code, _, stderr = await self._exec_raw(
             ["mkdir", "-p", self.config.workdir],
             {},
+            operation="setup_workdir",
         )
         if code != 0:
             raise SandboxError(
@@ -285,32 +328,48 @@ class ApptainerRuntime(Runtime):
         self,
         argv: list[str],
         env: dict[str, str],
+        *,
+        operation: str,
     ) -> tuple[int, bytes, bytes]:
         return await _command(
             self._binary,
             self._exec_argv(argv, env, workdir=False),
             self._exec_semaphore,
+            self._instance,
+            operation=operation,
         )
 
-    async def _exec(self, argv: list[str], env: dict[str, str], stdin: bytes | None = None) -> tuple[int, bytes, bytes]:
-        return await _command(self._binary, self._exec_args(argv, env), self._exec_semaphore, stdin)
+    async def _exec(self, argv: list[str], env: dict[str, str], stdin: bytes | None = None, *, operation: str | None = None) -> tuple[int, bytes, bytes]:
+        return await _command(self._binary, self._exec_args(argv, env), self._exec_semaphore, self._instance, stdin=stdin, operation=operation)
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        code, stdout, stderr = await self._exec(argv, env)
+    async def _run(self, argv: list[str], env: dict[str, str], operation: str) -> ProgramResult:
+        code, stdout, stderr = await self._exec(argv, env, operation=operation)
         return ProgramResult(
             exit_code=code,
             stdout=stdout.decode(errors="replace"),
             stderr=stderr.decode(errors="replace"),
         )
 
+    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        return await self._run(argv, env, "run")
+
+    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        return await self._run(argv, env, "run_program")
+
     async def run_background(self, argv: list[str], env: dict[str, str], log: str) -> None:
         # Keep the host-side exec alive: standard fakeroot's faked daemon is scoped
         # to it, so `nohup ... &` would leave the server with stale fakeroot state.
         inner = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
-        async with self._exec_semaphore:
+        args = self._exec_args(["sh", "-c", inner], env)
+        async with _timed_command(
+            self._exec_semaphore,
+            self._instance,
+            args,
+            operation="background_start",
+        ):
             proc = await asyncio.create_subprocess_exec(
                 self._binary,
-                *self._exec_args(["sh", "-c", inner], env),
+                *args,
                 env=_host_env(),
                 stdin=asyncio.subprocess.DEVNULL,
             )
@@ -319,7 +378,7 @@ class ApptainerRuntime(Runtime):
         waiter.add_done_callback(self._background.discard)
 
     async def read(self, path: str) -> bytes:
-        code, stdout, stderr = await self._exec(["cat", path], {})
+        code, stdout, stderr = await self._exec(["cat", path], {}, operation="read")
         if code != 0:
             raise SandboxError(f"read {path!r}: {stderr.decode(errors='replace').strip()}")
         return stdout
@@ -334,6 +393,7 @@ class ApptainerRuntime(Runtime):
             ],
             {},
             data,
+            operation="write",
         )
         if code != 0:
             raise SandboxError(f"write {path!r}: {stderr.decode(errors='replace').strip()}")

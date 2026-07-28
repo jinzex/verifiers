@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import uuid
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pydantic import ValidationError
@@ -13,6 +14,7 @@ from verifiers.v1.runtimes.apptainer import (
     _materialize_image,
     _resolve_image,
     _sif_path,
+    _timed_command,
 )
 
 
@@ -57,9 +59,63 @@ async def test_materialize_image_reuses_cached_sif(tmp_path: Path) -> None:
         image,
         str(tmp_path),
         asyncio.Semaphore(1),
+        "test-trace",
     )
 
     assert resolved == str(sif)
+
+
+@pytest.mark.parametrize(
+    ("args", "label"),
+    [
+        (["--version"], "op=version program=-"),
+        (["instance", "start", "image.sif", "trace"], "op=instance_start program=-"),
+        (["pull", "--force", "image.sif", "docker://image"], "op=pull program=-"),
+        (
+            ["exec", "--env", "API_KEY=secret", "instance://trace", "/tmp/bin/rlm", "--", "private prompt"],
+            "op=exec program=rlm",
+        ),
+    ],
+)
+async def test_command_timing_log(args: list[str], label: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    log = Mock()
+    monkeypatch.setattr("verifiers.v1.runtimes.apptainer.logger.info", log)
+    async with _timed_command(asyncio.Semaphore(1), "test-trace", args):
+        pass
+
+    message = log.call_args.args[0] % log.call_args.args[1:]
+    assert "trace_id=test-trace" in message
+    assert label in message
+    assert all(field in message for field in ("queued_at=", "queue_s=", "command_s="))
+    assert "command_id=" not in message
+    assert "secret" not in message
+    assert "private prompt" not in message
+
+
+async def test_command_timing_operation_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    log = Mock()
+    monkeypatch.setattr("verifiers.v1.runtimes.apptainer.logger.info", log)
+    async with _timed_command(
+        asyncio.Semaphore(1),
+        "test-trace",
+        ["exec", "instance://trace", "sh"],
+        operation="background_start",
+    ):
+        pass
+
+    assert "op=background_start" in log.call_args.args[0] % log.call_args.args[1:]
+
+
+async def test_run_program_uses_distinct_timing_operation(monkeypatch: pytest.MonkeyPatch) -> None:
+    command = AsyncMock(return_value=(0, b"done", b""))
+    monkeypatch.setattr("verifiers.v1.runtimes.apptainer._command", command)
+    runtime = ApptainerRuntime(ApptainerConfig(), name="test-trace")
+    runtime._running = True
+
+    result = await runtime.run_program(["agent"], {})
+
+    assert result.stdout == "done"
+    assert command.await_args.kwargs["operation"] == "run_program"
 
 
 @pytest.mark.integration

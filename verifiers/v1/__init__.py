@@ -16,6 +16,7 @@ from verifiers.v1.agent import Agent, AgentConfig, Agents, make_agent
 from verifiers.v1.configs.env import (
     ElasticPoolConfig,
     EnvServerConfig,
+    RemotePoolConfig,
     StaticPoolConfig,
     pool_serve_kwargs,
 )
@@ -253,6 +254,7 @@ __all__ = [
     "AgentConfig",
     "StaticPoolConfig",
     "ElasticPoolConfig",
+    "RemotePoolConfig",
     "default_agent_harness",
     "pool_serve_kwargs",
     "RetryConfig",
