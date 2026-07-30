@@ -10,7 +10,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import ClassVar
 
 from pydantic_config import BaseConfig
@@ -160,15 +160,11 @@ class Runtime(ABC):
         still retry individual safe transport operations underneath `run`."""
         return await self.run(argv, env)
 
-    async def run_background(
-        self, argv: list[str], env: dict[str, str], log: str
-    ) -> None:
+    async def run_background(self, argv: list[str], env: dict[str, str], log: str) -> None:
         """Start `argv` as a background process in the runtime (combined output to
         `log`, a path in the workspace) and return immediately. It runs until `stop()`
         tears the runtime down. Used to host a tool server colocated with the harness."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support run_background"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not support run_background")
 
     async def prepare_uv_script(
         self,
@@ -191,13 +187,8 @@ class Runtime(ABC):
                     )
                     result = await self.run(["sh", "-c", command], env or {})
                     if result.exit_code != 0:
-                        raise RuntimeError(
-                            "failed to prepare uv script: "
-                            f"{result.stderr.strip()[-2000:]}"
-                        )
-                    self._uv_interpreters[digest] = result.stdout.strip().splitlines()[
-                        -1
-                    ]
+                        raise RuntimeError(f"failed to prepare uv script: {result.stderr.strip()[-2000:]}")
+                    self._uv_interpreters[digest] = result.stdout.strip().splitlines()[-1]
         interpreter = self._uv_interpreters[digest]
         venv = str(PurePosixPath(interpreter).parent.parent)
         command = (
@@ -233,6 +224,13 @@ class Runtime(ABC):
     @abstractmethod
     async def read(self, path: str) -> bytes:
         pass
+
+    async def download(self, path: str, destination: str) -> None:
+        """Copy a runtime file to the host, buffering it unless overridden."""
+        data = await self.read(path)
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(target.write_bytes, data)
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:

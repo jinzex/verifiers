@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import AsyncIterator, Literal
 
-from pydantic import Field, PositiveInt
+from pydantic import Field, PositiveInt, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
@@ -74,8 +74,7 @@ async def _timed_command(
         finally:
             completed_clock = time.perf_counter()
             logger.info(
-                "apptainer_timing trace_id=%s op=%s program=%s queued_at=%.6f "
-                "queue_s=%.6f command_s=%.6f",
+                "apptainer_timing trace_id=%s op=%s program=%s queued_at=%.6f queue_s=%.6f command_s=%.6f",
                 trace_id,
                 operation,
                 program,
@@ -100,7 +99,22 @@ class ApptainerConfig(BaseConfig):
     """Run the instance with Apptainer fakeroot."""
     ignore_fakeroot_command: bool = False
     """Use only root UID mapping when the host fakeroot command is incompatible with the image."""
+    harness_cache_host_path: str | None = None
+    """Host directory containing immutable harness cache entries."""
+    harness_cache_sandbox_path: str | None = None
+    """Read-only path where `harness_cache_host_path` is mounted in the instance."""
     exec: ApptainerExecConfig = Field(default_factory=ApptainerExecConfig)
+
+    @model_validator(mode="after")
+    def _validate_harness_cache_paths(self) -> "ApptainerConfig":
+        if (self.harness_cache_host_path is None) != (self.harness_cache_sandbox_path is None):
+            raise ValueError("harness_cache_host_path and harness_cache_sandbox_path must be set together")
+        if (
+            self.harness_cache_sandbox_path is not None
+            and not PurePosixPath(self.harness_cache_sandbox_path).is_absolute()
+        ):
+            raise ValueError("harness_cache_sandbox_path must be absolute")
+        return self
 
 
 class ApptainerRuntimeInfo(ApptainerConfig, BaseRuntimeInfo):
@@ -219,9 +233,7 @@ def _pull_sif(binary: str, image: str, sif: Path) -> str:
                     timeout=_PULL_TIMEOUT,
                 )
             except subprocess.TimeoutExpired as e:
-                raise SandboxError(
-                    f"apptainer pull timed out after {_PULL_TIMEOUT} seconds for {image!r}"
-                ) from e
+                raise SandboxError(f"apptainer pull timed out after {_PULL_TIMEOUT} seconds for {image!r}") from e
             if result.returncode != 0:
                 raise SandboxError(f"apptainer pull failed for {image!r}: {(result.stderr or result.stdout).strip()}")
             os.replace(temporary, sif)
@@ -282,6 +294,13 @@ class ApptainerRuntime(Runtime):
             args.append("--fakeroot")
             if self.config.ignore_fakeroot_command:
                 args.append("--ignore-fakeroot-command")
+        if self.config.harness_cache_host_path is not None:
+            host_cache = Path(self.config.harness_cache_host_path).expanduser().resolve()
+            host_cache.mkdir(parents=True, exist_ok=True)
+            args += [
+                "--bind",
+                f"{host_cache}:{self.config.harness_cache_sandbox_path}:ro",
+            ]
         image = await _materialize_image(
             self._binary,
             self.config.image,
@@ -339,8 +358,17 @@ class ApptainerRuntime(Runtime):
             operation=operation,
         )
 
-    async def _exec(self, argv: list[str], env: dict[str, str], stdin: bytes | None = None, *, operation: str | None = None) -> tuple[int, bytes, bytes]:
-        return await _command(self._binary, self._exec_args(argv, env), self._exec_semaphore, self._instance, stdin=stdin, operation=operation)
+    async def _exec(
+        self, argv: list[str], env: dict[str, str], stdin: bytes | None = None, *, operation: str | None = None
+    ) -> tuple[int, bytes, bytes]:
+        return await _command(
+            self._binary,
+            self._exec_args(argv, env),
+            self._exec_semaphore,
+            self._instance,
+            stdin=stdin,
+            operation=operation,
+        )
 
     async def _run(self, argv: list[str], env: dict[str, str], operation: str) -> ProgramResult:
         code, stdout, stderr = await self._exec(argv, env, operation=operation)
@@ -382,6 +410,38 @@ class ApptainerRuntime(Runtime):
         if code != 0:
             raise SandboxError(f"read {path!r}: {stderr.decode(errors='replace').strip()}")
         return stdout
+
+    async def download(self, path: str, destination: str) -> None:
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        args = self._exec_args(["cat", path], {})
+        try:
+            async with _timed_command(
+                self._exec_semaphore,
+                self._instance,
+                args,
+                operation="download",
+            ):
+                with target.open("wb") as output:
+                    proc = await asyncio.create_subprocess_exec(
+                        self._binary,
+                        *args,
+                        env=_host_env(),
+                        stdin=asyncio.subprocess.DEVNULL,
+                        stdout=output,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    try:
+                        _, stderr = await proc.communicate()
+                    finally:
+                        if proc.returncode is None:
+                            proc.kill()
+                            await proc.wait()
+            if proc.returncode != 0:
+                raise SandboxError(f"download {path!r}: {stderr.decode(errors='replace').strip()}")
+        except BaseException:
+            target.unlink(missing_ok=True)
+            raise
 
     async def write(self, path: str, data: bytes) -> None:
         parent = shlex.quote(str(PurePosixPath(path).parent))

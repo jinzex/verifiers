@@ -39,6 +39,24 @@ def test_exec_concurrency_config() -> None:
         ApptainerConfig.model_validate({"exec": {"concurrency": 0}})
 
 
+def test_harness_cache_paths_are_paired() -> None:
+    config = ApptainerConfig(
+        harness_cache_host_path="/host/cache",
+        harness_cache_sandbox_path="/opt/verifiers/harness-cache",
+    )
+
+    assert config.harness_cache_host_path == "/host/cache"
+    assert config.harness_cache_sandbox_path == "/opt/verifiers/harness-cache"
+
+    with pytest.raises(ValidationError, match="must be set together"):
+        ApptainerConfig(harness_cache_host_path="/host/cache")
+    with pytest.raises(ValidationError, match="must be absolute"):
+        ApptainerConfig(
+            harness_cache_host_path="/host/cache",
+            harness_cache_sandbox_path="relative/cache",
+        )
+
+
 def test_exec_limiter_is_shared_within_one_server_process() -> None:
     limiter = _ExecLimiter()
 
@@ -148,6 +166,9 @@ async def test_pull_sif_and_run_lifecycle(image: str, ignore_fakeroot_command: b
             assert identity.stdout.strip() == "0"
             await runtime.write("runtime-test.txt", b"ready")
             assert await runtime.read("runtime-test.txt") == b"ready"
+            downloaded = Path(temporary) / "downloaded.txt"
+            await runtime.download("runtime-test.txt", str(downloaded))
+            assert downloaded.read_bytes() == b"ready"
             result = await runtime.run(["pwd"], {})
             assert result.exit_code == 0
             assert result.stdout.strip() == "/workspace"
