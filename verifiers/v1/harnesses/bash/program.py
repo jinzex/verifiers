@@ -7,6 +7,7 @@
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
@@ -135,10 +136,28 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
 
 def run_bash(command: str) -> str:
     try:
+        env = os.environ.copy()
+        keys = env.pop("_VF_PARENT_ENV_KEYS", "")
+        if keys:
+            present = env.pop("_VF_PARENT_ENV_PRESENT").split(":")
+            for key, is_present in zip(keys.split(":"), present, strict=True):
+                value = env.pop(f"_VF_PARENT_{key}")
+                if is_present:
+                    env[key] = value
+                else:
+                    env.pop(key, None)
         result = subprocess.run(
-            ["bash", "-c", command], capture_output=True, text=True, timeout=3600
+            ["bash", "-c", command],
+            capture_output=True,
+            text=True,
+            timeout=3600,
+            env=env,
         )
-        return result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        if result.returncode != 0:
+            separator = "" if not output or output.endswith("\n") else "\n"
+            output += f"{separator}[command exited with code {result.returncode}]"
+        return output
     except Exception as e:
         return f"error: {e}"
 

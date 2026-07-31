@@ -170,6 +170,7 @@ class Runtime(ABC):
         self,
         script: str | bytes,
         env: dict[str, str] | None = None,
+        preserve_env: tuple[str, ...] = (),
     ) -> list[str]:
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
@@ -191,8 +192,15 @@ class Runtime(ABC):
                     self._uv_interpreters[digest] = result.stdout.strip().splitlines()[-1]
         interpreter = self._uv_interpreters[digest]
         venv = str(PurePosixPath(interpreter).parent.parent)
+        preserved = ""
+        if preserve_env:
+            keys = ":".join(preserve_env)
+            present = ":".join(f"${{{key}+x}}" for key in preserve_env)
+            values = " ".join(f'_VF_PARENT_{key}="${{{key}-}}"' for key in preserve_env)
+            preserved = f'_VF_PARENT_ENV_KEYS={shlex.quote(keys)} _VF_PARENT_ENV_PRESENT="{present}" {values} '
         command = (
-            'export VIRTUAL_ENV="$1" PATH="${1}/bin:$HOME/.local/bin:$PATH" '
+            f"export {preserved}"
+            'VIRTUAL_ENV="$1" PATH="${1}/bin:$HOME/.local/bin:$PATH" '
             'UV_INSTALL_DIR="$HOME/.local/bin" UV_RUN_RECURSION_DEPTH=1; '
             'shift; exec "$@"'
         )

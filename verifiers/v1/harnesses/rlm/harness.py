@@ -184,7 +184,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
 
     async def _restore_cache(self, runtime: Runtime, sandbox_entry: PurePosixPath) -> None:
         """Restore the checkout and installation from the shared cache."""
-        logger.debug("rlm: restoring cache entry %s", sandbox_entry)
+        logger.info("rlm: restoring cache entry %s", sandbox_entry)
         restore = (
             f"rm -rf {RLM_CHECKOUT} {RLM_DIR} && tar -xf {shlex.quote(str(sandbox_entry))} -C / && test -x {RLM_BIN}"
         )

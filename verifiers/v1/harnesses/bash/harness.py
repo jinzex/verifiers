@@ -2,9 +2,9 @@ import json
 import os
 from pathlib import Path
 
-from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -22,6 +22,13 @@ EDIT_SYSTEM_PROMPT = (
 SEARCH_PROMPT = (
     "You also have a search tool that returns Google results (title, URL, snippet) for a query; "
     "use it to research, and use bash (e.g. curl) to read result pages in full when needed."
+)
+BASH_TASK_ENV_KEYS = (
+    "PATH",
+    "VIRTUAL_ENV",
+    "UV_INSTALL_DIR",
+    "UV_RUN_RECURSION_DEPTH",
+    "LC_CTYPE",
 )
 
 
@@ -114,6 +121,8 @@ class BashHarness(Harness[BashHarnessConfig]):
             )
             args.append(f"--initial-messages-file={path}")
         program = await runtime.prepare_uv_script(
-            PROGRAM_SOURCE, self.config.resolved_env
+            PROGRAM_SOURCE,
+            self.config.resolved_env,
+            preserve_env=BASH_TASK_ENV_KEYS,
         )
         return await runtime.run_program([*program, *args], env)
