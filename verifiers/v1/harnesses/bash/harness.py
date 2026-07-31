@@ -13,7 +13,12 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 # Frames the model as a coding agent and names its local tools (a pure-text chat loop gets no
 # harness-injected prompt). The edit clause is appended only when the `edit` tool is enabled.
 BASH_SYSTEM_PROMPT = (
-    "You are a coding agent. You have access to a bash tool for running shell commands."
+    "You are a general purpose agent that uses code to solve tasks.\n"
+    "You solve tasks by analyzing the problem, creating a thoughtful plan, breaking the problem "
+    "down into sub-tasks, implementing and executing code, verifying results, and iterating one "
+    "step at a time.\n"
+    "When you are done, stop calling tools and state your final answer.\n\n"
+    "You have access to a bash tool for running shell commands."
 )
 EDIT_SYSTEM_PROMPT = (
     "You also have an edit tool for single-occurrence string replacement in a file."
