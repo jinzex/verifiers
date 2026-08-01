@@ -7,11 +7,12 @@ import logging
 import os
 import re
 import shlex
+import signal
 import subprocess
 import tempfile
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path, PurePosixPath
 from typing import AsyncIterator, Literal
 
@@ -151,13 +152,17 @@ async def _command(
             stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
+        communication = asyncio.create_task(proc.communicate(input=stdin))
         try:
-            stdout, stderr = await proc.communicate(input=stdin)
-        finally:
-            if proc.returncode is None:
-                proc.kill()
-                await proc.wait()
+            stdout, stderr = await asyncio.shield(communication)
+        except BaseException:
+            with suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            with suppress(BaseException):
+                await communication
+            raise
         return proc.returncode or 0, stdout, stderr
 
 

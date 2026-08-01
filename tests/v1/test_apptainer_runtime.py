@@ -173,6 +173,11 @@ async def test_pull_sif_and_run_lifecycle(image: str, ignore_fakeroot_command: b
             assert result.exit_code == 0
             assert result.stdout.strip() == "/workspace"
             if not ignore_fakeroot_command:
+                started = asyncio.get_running_loop().time()
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(runtime.run(["sh", "-c", "exec sleep 10"], {}), 0.1)
+                assert asyncio.get_running_loop().time() - started < 2
+                assert (await runtime.run(["true"], {})).exit_code == 0
                 result = await runtime.run(
                     ["sh", "-lc", 'chown 42:43 runtime-test.txt && stat -c "%u:%g" runtime-test.txt'],
                     {},
