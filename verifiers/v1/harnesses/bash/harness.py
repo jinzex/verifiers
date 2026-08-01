@@ -1,14 +1,32 @@
 import json
 import os
+import platform
 from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes.apptainer import ApptainerRuntime
+from verifiers.v1.runtimes.base import _INSTALL_CURL
 from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
+TINI_PATH = "~/.local/bin/tini"
+_TINI_RELEASE = "https://github.com/krallin/tini/releases/download/v0.19.0"
+_TINI_ASSETS = {
+    "x86_64": ("tini-static-amd64", "c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee"),
+    "aarch64": ("tini-static-arm64", "eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa84a48b9"),
+}
+_TINI_INSTALL = (
+    'set -eu; command -v unshare >/dev/null; path="$HOME/.local/bin/tini"; '
+    'if [ -x "$path" ] && printf "%s  %s\\n" "$2" "$path" | sha256sum -c - >/dev/null 2>&1; '
+    "then exit 0; fi; "
+    f"{_INSTALL_CURL}; "
+    'mkdir -p "${path%/*}"; tmp=$(mktemp "${path}.XXXXXX"); trap \'rm -f "$tmp"\' EXIT; '
+    '{ curl -LsSf "$1" -o "$tmp" 2>/dev/null || wget -qO "$tmp" "$1"; }; '
+    'printf "%s  %s\\n" "$2" "$tmp" | sha256sum -c -; chmod 755 "$tmp"; mv -f "$tmp" "$path"'
+)
 
 # Frames the model as a coding agent and names its local tools (a pure-text chat loop gets no
 # harness-injected prompt). The edit clause is appended only when the `edit` tool is enabled.
@@ -56,6 +74,17 @@ class BashHarness(Harness[BashHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
+        if isinstance(runtime, ApptainerRuntime):
+            machine = platform.machine().lower()
+            if machine not in _TINI_ASSETS:
+                raise RuntimeError(f"Tini is not available for architecture {machine!r}")
+            asset, checksum = _TINI_ASSETS[machine]
+            result = await runtime.run(
+                ["sh", "-c", _TINI_INSTALL, "tini-install", f"{_TINI_RELEASE}/{asset}", checksum],
+                self.config.resolved_env,
+            )
+            if result.exit_code != 0:
+                raise RuntimeError(f"failed to prepare Tini: {(result.stderr or result.stdout).strip()[-2000:]}")
 
     async def launch(
         self,
@@ -82,6 +111,8 @@ class BashHarness(Harness[BashHarnessConfig]):
             f"--model={ctx.model}",
             f"--system-prompt={system_prompt}",
         ]
+        if isinstance(runtime, ApptainerRuntime):
+            args.append(f"--tini-path={TINI_PATH}")
         if self.config.edit:
             args.append("--edit")
         if self.config.search:

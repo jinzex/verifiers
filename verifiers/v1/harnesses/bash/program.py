@@ -134,7 +134,7 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
         return f"search failed ({e}). Try again or rephrase the query."
 
 
-def run_bash(command: str) -> str:
+def run_bash(command: str, tini_path: str = "") -> str:
     try:
         env = os.environ.copy()
         keys = env.pop("_VF_PARENT_ENV_KEYS", "")
@@ -146,8 +146,21 @@ def run_bash(command: str) -> str:
                     env[key] = value
                 else:
                     env.pop(key, None)
+        argv = ["bash", "-c", command]
+        if tini_path:
+            argv = [
+                "unshare",
+                "--pid",
+                "--fork",
+                "--kill-child=SIGKILL",
+                "--mount-proc",
+                os.path.expanduser(tini_path),
+                "-g",
+                "--",
+                *argv,
+            ]
         result = subprocess.run(
-            ["bash", "-c", command],
+            argv,
             capture_output=True,
             text=True,
             timeout=3600,
@@ -325,6 +338,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
+    parser.add_argument("--tini-path", default="")
     return parser.parse_args()
 
 
@@ -394,7 +408,7 @@ async def main() -> None:
                 content = await call_mcp(servers, dispatch, name, tool_args)
             elif name == "bash":
                 content = await asyncio.to_thread(
-                    run_bash, tool_args.get("command", "")
+                    run_bash, tool_args.get("command", ""), args.tini_path
                 )
             elif name == "edit" and args.edit:
                 content = await asyncio.to_thread(
