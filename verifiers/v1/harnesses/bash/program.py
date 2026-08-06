@@ -134,7 +134,7 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
         return f"search failed ({e}). Try again or rephrase the query."
 
 
-def run_bash(command: str, tini_path: str = "") -> str:
+def run_bash(command: str, tini_path: str = "", *, timeout: int) -> str:
     try:
         env = os.environ.copy()
         keys = env.pop("_VF_PARENT_ENV_KEYS", "")
@@ -163,7 +163,7 @@ def run_bash(command: str, tini_path: str = "") -> str:
             argv,
             capture_output=True,
             text=True,
-            timeout=3600,
+            timeout=timeout,
             env=env,
         )
         output = result.stdout + result.stderr
@@ -171,6 +171,8 @@ def run_bash(command: str, tini_path: str = "") -> str:
             separator = "" if not output or output.endswith("\n") else "\n"
             output += f"{separator}[command exited with code {result.returncode}]"
         return output
+    except subprocess.TimeoutExpired:
+        return f"error: command timed out after {timeout} seconds"
     except Exception as e:
         return f"error: {e}"
 
@@ -339,6 +341,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
     parser.add_argument("--tini-path", default="")
+    parser.add_argument("--bash-timeout", type=int, required=True)
     return parser.parse_args()
 
 
@@ -408,7 +411,10 @@ async def main() -> None:
                 content = await call_mcp(servers, dispatch, name, tool_args)
             elif name == "bash":
                 content = await asyncio.to_thread(
-                    run_bash, tool_args.get("command", ""), args.tini_path
+                    run_bash,
+                    tool_args.get("command", ""),
+                    args.tini_path,
+                    timeout=args.bash_timeout,
                 )
             elif name == "edit" and args.edit:
                 content = await asyncio.to_thread(

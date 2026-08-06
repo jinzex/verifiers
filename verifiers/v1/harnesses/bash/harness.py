@@ -3,6 +3,8 @@ import os
 import platform
 from pathlib import Path
 
+from pydantic import PositiveInt
+
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness, HarnessConfig
@@ -56,6 +58,9 @@ BASH_TASK_ENV_KEYS = (
 
 
 class BashHarnessConfig(HarnessConfig):
+    bash_timeout: PositiveInt = 900
+    """Maximum seconds for one `bash` tool call."""
+
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
     `bash`. On by default; set `--env.agent.harness.edit false` for a bash-only agent."""
@@ -110,6 +115,7 @@ class BashHarness(Harness[BashHarnessConfig]):
             f"--api-key={secret}",
             f"--model={ctx.model}",
             f"--system-prompt={system_prompt}",
+            f"--bash-timeout={self.config.bash_timeout}",
         ]
         if isinstance(runtime, ApptainerRuntime):
             args.append(f"--tini-path={TINI_PATH}")
