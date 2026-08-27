@@ -8,14 +8,16 @@ reuses the chat client's wire translation (message/tool shapes are the same), an
 needs a running vLLM engine.
 """
 
+import base64
+import io
 import json
 from collections.abc import Mapping
 from typing import Any
 
+import numpy as np
 from openai import AsyncOpenAI, OpenAIError
-from renderers import RenderedTokens
 from renderers import OverlongPromptError as RendererOverlongPromptError
-from renderers import RendererConfig
+from renderers import RenderedTokens, RendererConfig
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
@@ -44,6 +46,22 @@ def tool_to_wire(tool: Tool) -> dict:
     if tool.strict is not None:
         function["strict"] = tool.strict
     return {"type": "function", "function": function}
+
+
+def _normalize_native_routed_experts(payload: Any, start: int = 0) -> Any:
+    """Convert vLLM's base64-NPY payload to verifiers' routed-experts shape."""
+    if not isinstance(payload, str):
+        return payload
+    array = np.load(io.BytesIO(base64.b64decode(payload)), allow_pickle=False)
+    if array.ndim != 3 or not np.issubdtype(array.dtype, np.integer):
+        raise ValueError(f"Invalid routed experts array: shape={array.shape}, dtype={array.dtype}")
+    array = np.ascontiguousarray(array)
+    return {
+        "data": base64.b64encode(memoryview(array)),
+        "shape": list(array.shape),
+        "start": start,
+        "dtype": array.dtype.name,
+    }
 
 
 def serialize_completion(response: Response, model: str) -> dict:
@@ -317,6 +335,10 @@ class TrainClient(Client):
             raise OverlongPromptError(str(e)) from e
         except OpenAIError as e:
             raise model_error(e) from e
+        result["routed_experts"] = _normalize_native_routed_experts(
+            result.get("routed_experts"),
+            int(sampling_params.get("routed_experts_prompt_start", 0) or 0),
+        )
         response = response_from_generate(result, model, bridged_turn)
         # No provider response to relay (we generated), so serialize one for the program; the
         # interception server hands `Response.raw` back regardless of client.
