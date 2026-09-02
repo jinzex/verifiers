@@ -19,7 +19,7 @@ from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.episode import Episode, WireEpisode
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import _NODE_DUMP_EXCLUDE, Trace
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.install import env_name
 
@@ -71,8 +71,13 @@ def save_config(config: BaseModel, results_dir: Path) -> None:
 
 def write_episode(results_dir: Path, episode: Episode) -> None:
     """Serialize and append one rollout episode in the worker thread."""
-    # Preserve fields declared by typed Trace subclasses nested in the episode.
-    data = TypeAdapter(type(episode)).dump_json(episode, exclude_none=True)
+    # Use the concrete Episode type to retain fields added by custom Trace subclasses.
+    # Episode serialization bypasses Trace.to_record(), so exclude raw tensors here too.
+    data = TypeAdapter(type(episode)).dump_json(
+        episode,
+        exclude_none=True,
+        exclude={"traces": {"__all__": _NODE_DUMP_EXCLUDE}},
+    )
     with (results_dir / TRACES_FILE).open("ab") as f:
         f.write(data + b"\n")
 

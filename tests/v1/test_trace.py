@@ -5,7 +5,9 @@ dump without importing the originating taskset."""
 
 import json
 
+import numpy as np
 import verifiers.v1 as vf
+from verifiers.v1.cli.output import write_episode
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
 
@@ -90,3 +92,25 @@ def test_wire_trace_round_trip():
 
     # the env-server wire form (a plain model_dump) loads too
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
+
+
+def test_json_outputs_exclude_raw_tensor_fields(tmp_path):
+    trace = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+        nodes=[
+            MessageNode(
+                message=AssistantMessage(content="a"),
+                sampled=True,
+                routed_experts=np.array([[[255]]], dtype=np.uint8),
+            )
+        ],
+    )
+
+    write_episode(tmp_path, vf.Episode.of(trace))
+
+    row = json.loads((tmp_path / "traces.jsonl").read_text())
+    node = row["traces"][0]["nodes"][0]
+    assert node["message"]["content"] == "a"
+    assert "routed_experts" not in node
+    trace_row = trace.to_record()
+    assert "routed_experts" not in trace_row["nodes"][0]
